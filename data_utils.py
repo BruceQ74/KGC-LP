@@ -118,6 +118,16 @@ class WN18RRProcessor(object):
 
     def convert_to_feature(self, tokenizer, examples, max_seq_length=16):
         label_map = self.get_label_map()
+
+        # labels
+        labels_dict = self.get_labels()
+        token_label = []
+        for la in labels_dict:
+            tokens = tokenizer.tokenize(la)
+            token_label = token_label + ["[CLS]"] + tokens + ["[SEP]"]
+        input_id_labels = tokenizer.convert_tokens_to_ids(token_label)
+
+        # entities
         features = []
         for ex_index, example in enumerate(examples):
 
@@ -182,6 +192,7 @@ class WN18RRProcessor(object):
                 "label_ids": torch.tensor(label_ids, dtype=torch.long),
                 "valid_ids1": torch.tensor(valid_ids1, dtype=torch.long),
                 "valid_ids2": torch.tensor(valid_ids2, dtype=torch.long),
+                "input_id_labels": torch.tensor(input_id_labels, dtype=torch.long),
                 "entity1": example.entity1,
                 "entity2": example.entity2,
                 "label": example.label,

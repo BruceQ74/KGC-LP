@@ -2,7 +2,7 @@
 
 from pytorch_transformers import BertTokenizer,BertModel
 
-from baseline import KGCBaseline
+from lpmem import KGCLPMEM
 
 import logging
 import argparse
@@ -127,8 +127,9 @@ class Instructor:
             entity1_ids = sample_batched["entity1_ids"].to(self.args.device)
             entity2_ids = sample_batched["entity2_ids"].to(self.args.device)
             label_ids = sample_batched["label_ids"].to(self.args.device)
+            input_id_labels = sample_batched["input_id_labels"].to(self.args.device)
 
-            loss, logits = model(entity1_ids, entity2_ids, label_ids)
+            loss, logits = model(entity1_ids, entity2_ids, input_id_labels, label_ids)
 
             if args.gradient_accumulation_steps > 1:
                 loss = loss / args.gradient_accumulation_steps
@@ -193,11 +194,11 @@ class Instructor:
                 entity1_ids = sample_batched["entity1_ids"].to(self.args.device)
                 entity2_ids = sample_batched["entity2_ids"].to(self.args.device)
                 label_ids = sample_batched["label_ids"].to(self.args.device)
+                input_id_labels = sample_batched["input_id_labels"].to(self.args.device)
 
-                logits = model(entity1_ids, entity2_ids)
+                logits = model(entity1_ids, entity2_ids, input_id_labels)
                 logits_evaluation.extend(logits.tolist())
                 label_evaluation.extend(label_ids.tolist())
-                num += len(label_ids.tolist())
         
         logits_evaluation_1 = torch.tensor(logits_evaluation)
         label_evaluation_1 = torch.tensor(label_evaluation)
@@ -214,7 +215,7 @@ class Instructor:
 
     def prepare_model_optimizer(self):
         label_size = self.data_processor.get_label_size()
-        model = KGCBaseline(label_size=label_size, bert_path=self.args.bert_model, encoder=self.args.encoder, num_layers=self.args.num_layers)
+        model = KGCLPMEM(label_size=label_size, bert_path=self.args.bert_model, encoder=self.args.encoder, num_layers=self.args.num_layers)
 
         print("build model...")
 

@@ -66,7 +66,8 @@ class KGCBaseline(nn.Module):
         elif encoder == "bilstm":
             self.entity_encoder = BiLSTM(in_feature=self.hidden_size, out_feature=self.hidden_size, num_layers=num_layers,
                                           batch_first=True)
-        self.classifier = nn.Linear(self.hidden_size * 2, label_size)
+        self.compress = nn.Linear(self.hidden_size * 2, self.hidden_size)
+        self.classifier = nn.Linear(self.hidden_size, label_size)
 
     def _reset_params(self, initializer):
         for child in self.children():
@@ -96,17 +97,18 @@ class KGCBaseline(nn.Module):
             valid_output[i] = temp
         return valid_output
 
-    def forward(self, entity1_ids, entity2_ids, labels = None, token_type_ids = None):
-        entity1_output, _ = self.bert(entity1_ids, token_type_ids)
-        entity2_output, _ = self.bert(entity2_ids, token_type_ids)
+    def forward(self, input_ids1, input_ids2, labels = None, token_type_ids = None):
+        input_out1, _ = self.bert(input_ids1, token_type_ids)
+        input_out2, _ = self.bert(input_ids2, token_type_ids)
 
-        entity1_output = self.get_entity(entity1_output)
-        entity2_output = self.get_entity(entity2_output)
+        input_out1 = self.get_entity(input_out1)
+        input_out2 = self.get_entity(input_out2)
         
-        entity_pair = torch.cat([entity1_output, entity2_output], dim=-1)
-        entity_pair = self.dropout(entity_pair)
+        pair_out = torch.cat([input_out1, input_out2], dim=-1)
+        pair_out = self.dropout(pair_out)
+        pair_out = self.compress(pair_out)
 
-        logits = self.classifier(entity_pair)
+        logits = self.classifier(pair_out)
 
         if labels is not None:
             loss_fct = CrossEntropyLoss(ignore_index = 0)

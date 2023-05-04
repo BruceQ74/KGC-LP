@@ -3,6 +3,7 @@
 from pytorch_transformers import BertTokenizer,BertModel
 
 from lpmem import KGCLPMEM
+from baseline import KGCBaseline
 
 import logging
 import argparse
@@ -82,7 +83,7 @@ class Instructor:
         output_args_file = os.path.join(self.args.outdir, 'training_args.bin')
         torch.save(self.args, output_args_file)
 
-    def evaluation(self, logits, label_ids, mode = "train"):
+    def evaluate_batch(self, logits, label_ids, mode = "train"):
         logs = []
         argsort = torch.argsort(logits, dim = 1, descending = True)
         test_result = []
@@ -101,18 +102,21 @@ class Instructor:
                 "mrr": 1.0/ranking,
                 "mr": ranking, 
                 "hit@1": 1.0 if ranking <= 1.0 else 0.0,
-                "hit@5": 1.0 if ranking <= 5.0 else 0.0,
+                "hit@3": 1.0 if ranking <= 3.0 else 0.0,
                 "hit@10": 1.0 if ranking <= 10.0 else 0.0
                 })
 
+        if mode == "test":
+            return logs, torch.tensor(test_result)
+        else:
+            return logs
+
+    def evaluation(self, logs):
         metrics = {}
         for metric in logs[0].keys():
             metrics[metric] = sum([log[metric] for log in logs])/len(logs)
 
-        if mode == "test":
-            return metrics, torch.tensor(test_result)
-        else:
-            return metrics
+        return metrics
 
     def _train_single_step(self, model, optimizer, scheduler, train_data_loader, global_step, args):
         n_correct, n_total, loss_total = 0, 0, 0
@@ -120,16 +124,18 @@ class Instructor:
         average_loss = 0
         logits_evaluation = []
         label_evaluation = []
+        logs = []
 
         # switch model to training mode
         model.train()
         for i_batch, sample_batched in enumerate(train_data_loader):
-            entity1_ids = sample_batched["entity1_ids"].to(self.args.device)
-            entity2_ids = sample_batched["entity2_ids"].to(self.args.device)
+            input_ids1 = sample_batched["entity1_ids"].to(self.args.device)
+            input_ids2 = sample_batched["relation_ids"].to(self.args.device)
             label_ids = sample_batched["label_ids"].to(self.args.device)
             input_id_labels = sample_batched["input_id_labels"].to(self.args.device)
 
-            loss, logits = model(entity1_ids, entity2_ids, input_id_labels, label_ids)
+            # loss, logits = model(input_ids1, input_ids2, label_ids)
+            loss, logits = model(input_ids1, input_ids2, input_id_labels, label_ids)
 
             if args.gradient_accumulation_steps > 1:
                 loss = loss / args.gradient_accumulation_steps
@@ -144,19 +150,20 @@ class Instructor:
                 optimizer.zero_grad()
                 global_step += 1
 
-            logits_evaluation.extend(logits.tolist())
-            label_evaluation.extend(label_ids.tolist())
+            logs.extend(self.evaluate_batch(logits, label_ids))
+            # logits_evaluation.extend(logits.tolist())
+            # label_evaluation.extend(label_ids.tolist())
             n_total += len(label_ids) 
             loss_total += loss.item() * len(label_ids)
             if global_step % self.args.log_step == 0:
-                logits_evaluation_t = torch.tensor(logits_evaluation)
-                label_evaluation_t = torch.tensor(label_evaluation)
-                metrics = self.evaluation(logits_evaluation_t, label_evaluation_t)
+                # logits_evaluation_t = torch.tensor(logits_evaluation)
+                # label_evaluation_t = torch.tensor(label_evaluation)
+                metrics = self.evaluation(logs)
                 train_loss = loss_total / n_total
-                logger.info('global_step: {}, loss: {:.4f}, mrr: {:.4f}, mr: {:.4f}, hit@1: {:.4f}, hit@5: {:.4f}, hit@10: {:.4f} '
-                            'lr: {:.6f}'.format(global_step, train_loss, metrics["mrr"], metrics["mr"], metrics["hit@1"], metrics["hit@5"], metrics["hit@10"], optimizer.get_lr()[0]))
-                # logger.info('global_step: {}, loss: {:.4f}, mrr: {:.4f}, mr: {:.4f}, hit@1: {:.4f}, hit@5: {:.4f}, hit@10: {:.4f} '
-                #             'lr: {:.6f}'.format(global_step, train_loss, metrics["mrr"], metrics["mr"], metrics["hit@1"], metrics["hit@5"], metrics["hit@10"], optimizer.param_groups[0]['lr']))
+                # logger.info('global_step: {}, loss: {:.4f}, mrr: {:.4f}, mr: {:.4f}, hit@1: {:.4f}, hit@3: {:.4f}, hit@10: {:.4f} '
+                #             'lr: {:.6f}'.format(global_step, train_loss, metrics["mrr"], metrics["mr"], metrics["hit@1"], metrics["hit@3"], metrics["hit@10"], optimizer.get_lr()[0]))
+                logger.info('global_step: {}, loss: {:.4f}, mrr: {:.4f}, mr: {:.4f}, hit@1: {:.4f}, hit@3: {:.4f}, hit@10: {:.4f} '
+                            'lr: {:.6f}'.format(global_step, train_loss, metrics["mrr"], metrics["mr"], metrics["hit@1"], metrics["hit@3"], metrics["hit@10"], optimizer.param_groups[0]['lr']))
         return global_step
 
     def _train(self, model, optimizer, scheduler, train_data_loader, dev_dataloader, test_dataloader):
@@ -186,38 +193,50 @@ class Instructor:
         average_loss = 0
         logits_evaluation = []
         label_evaluation = []
+        logs = []
+        test_results = []
 
-        # switch model to training mode
+        # switch model to eval mode
         model.eval()
         with torch.no_grad():
             for i_batch, sample_batched in enumerate(data_loader):
-                entity1_ids = sample_batched["entity1_ids"].to(self.args.device)
-                entity2_ids = sample_batched["entity2_ids"].to(self.args.device)
+                input_ids1 = sample_batched["entity1_ids"].to(self.args.device)
+                input_ids2 = sample_batched["relation_ids"].to(self.args.device)
                 label_ids = sample_batched["label_ids"].to(self.args.device)
                 input_id_labels = sample_batched["input_id_labels"].to(self.args.device)
 
-                logits = model(entity1_ids, entity2_ids, input_id_labels)
-                logits_evaluation.extend(logits.tolist())
+                # logits = model(input_ids1, input_ids2)
+                logits = model(input_ids1, input_ids2, input_id_labels)
+
+                if mode == "test":
+                    tmp, test_result = self.evaluate_batch(logits, label_ids, mode = "test")
+                    logs.extend(tmp)
+                    test_results.extend(test_result)
+                else:
+                    logs.extend(self.evaluate_batch(logits, label_ids))
+                # logits_evaluation.extend(logits.tolist())
                 label_evaluation.extend(label_ids.tolist())
         
-        logits_evaluation_1 = torch.tensor(logits_evaluation)
+        # logits_evaluation_1 = torch.tensor(logits_evaluation)
         label_evaluation_1 = torch.tensor(label_evaluation)
+        metrics = self.evaluation(logs)
         if mode == "test":
-            metrics, result = self.evaluation(logits_evaluation_1, label_evaluation_1, mode)
             label_map = self.data_processor.get_id2label_map()
             with open("test_result.txt", "w") as f:
-                for i_, j_ in zip(result, label_evaluation_1):
+                for i_, j_ in zip(test_results, label_evaluation_1):
                     f.write("{}\t{}\n".format(label_map[i_.item()], label_map[j_.item()]))
-        else:
-            metrics = self.evaluation(logits_evaluation_1, label_evaluation_1)
 
         return metrics
 
     def prepare_model_optimizer(self):
         label_size = self.data_processor.get_label_size()
         model = KGCLPMEM(label_size=label_size, bert_path=self.args.bert_model, encoder=self.args.encoder, num_layers=self.args.num_layers)
-
+        print("Model: KGCLPMEM")
         print("build model...")
+
+        # model = KGCBaseline(label_size=label_size, bert_path=self.args.bert_model, encoder=self.args.encoder, num_layers=self.args.num_layers)
+        # print("Model: KGCBaseline")
+        # print("build model...")
 
         if self.args.resume is True:
             print("resume from: {}".format(self.args.resume_model))
@@ -250,12 +269,12 @@ class Instructor:
 
         print("Number of parameters:", sum(p[1].numel() for p in param_optimizer if p[1].requires_grad))
 
-        optimizer = BertAdam(optimizer_grouped_parameters,
-                             lr=self.args.learning_rate,
-                             warmup=self.args.warmup_proportion,
-                             t_total=num_train_optimization_steps)
+        # optimizer = BertAdam(optimizer_grouped_parameters,
+        #                      lr=self.args.learning_rate,
+        #                      warmup=self.args.warmup_proportion,
+        #                      t_total=num_train_optimization_steps)
 
-        # optimizer = torch.optim.Adam(optimizer_grouped_parameters, lr=self.args.learning_rate)
+        optimizer = torch.optim.Adam(optimizer_grouped_parameters, lr=self.args.learning_rate)
 
         scheduler = None
 
